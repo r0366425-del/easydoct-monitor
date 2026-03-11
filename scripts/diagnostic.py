@@ -1,18 +1,44 @@
 #!/usr/bin/env python3
 """
-SCRIPT DE DIAGNOSTIC v2 — EasyDoct
-Corrige le problème de sélection de l'examen (chargement AJAX).
+SCRIPT DE DIAGNOSTIC v3 — EasyDoct
+Utilise JavaScript pour déclencher la réactivité Vue.js
 """
 
 from datetime import datetime
-from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
+from playwright.sync_api import sync_playwright
 
 URL = "https://www.easydoct.com/rdv/imagerie-57-thionville-Terville-Hayange"
 
 def screenshot(page, nom):
-    path = f"/tmp/{nom}.png"
-    page.screenshot(path=path, full_page=True)
+    page.screenshot(path=f"/tmp/{nom}.png", full_page=True)
     print(f"📸 {nom}.png")
+
+def set_vue_select(page, selector, value):
+    """Force la sélection dans un select Vue.js en déclenchant les bons événements."""
+    page.evaluate(f"""
+        (function() {{
+            var el = document.querySelector('{selector}');
+            if (!el) {{ return 'element not found'; }}
+            
+            // Trouver l'option correspondante
+            var options = el.options;
+            var found = false;
+            for (var i = 0; i < options.length; i++) {{
+                if (options[i].text.includes('{value}') || options[i].value.includes('{value}')) {{
+                    el.selectedIndex = i;
+                    found = true;
+                    break;
+                }}
+            }}
+            
+            if (!found) {{ return 'option not found: {value}'; }}
+            
+            // Déclencher tous les événements nécessaires pour Vue.js
+            el.dispatchEvent(new Event('change', {{ bubbles: true }}));
+            el.dispatchEvent(new Event('input', {{ bubbles: true }}));
+            return 'ok: ' + el.options[el.selectedIndex].text;
+        }})()
+    """)
 
 def diagnostic():
     with sync_playwright() as p:
@@ -26,81 +52,98 @@ def diagnostic():
             page.wait_for_timeout(3000)
             screenshot(page, "01_page_chargee")
 
-            # 2. Sélectionner SCANNER SANS INJECTION
-            print("\n[2] Sélection type d'examen...")
-            selects = page.query_selector_all("select")
-            print(f"  {len(selects)} select(s) trouvé(s) au départ")
+            # 2. Lister tous les selects et leurs options
+            print("\n[2] Analyse des selects...")
+            result = page.evaluate("""
+                Array.from(document.querySelectorAll('select')).map((sel, i) => ({
+                    index: i,
+                    name: sel.name,
+                    id: sel.id,
+                    class: sel.className,
+                    options: Array.from(sel.options).map(o => o.text.trim())
+                }))
+            """)
+            for s in result:
+                print(f"  Select #{s['index']} id='{s['id']}' name='{s['name']}' class='{s['class']}'")
+                print(f"    Options: {s['options']}")
 
-            type_selectionne = False
-            for sel in selects:
-                opts = [o.inner_text().strip() for o in sel.query_selector_all("option")]
-                print(f"  Options: {opts}")
-                if any("INJECTION" in o.upper() for o in opts):
-                    sel.select_option(label="SCANNER SANS INJECTION")
-                    print("  ✅ SCANNER SANS INJECTION sélectionné")
-                    type_selectionne = True
-                    break
+            # 3. Sélectionner SCANNER SANS INJECTION via JavaScript
+            print("\n[3] Sélection type d'examen via JS...")
+            res = page.evaluate("""
+                (function() {
+                    var selects = document.querySelectorAll('select');
+                    for (var sel of selects) {
+                        for (var opt of sel.options) {
+                            if (opt.text.includes('SCANNER SANS INJECTION')) {
+                                sel.value = opt.value;
+                                sel.dispatchEvent(new Event('change', {bubbles: true}));
+                                sel.dispatchEvent(new Event('input', {bubbles: true}));
+                                return 'ok: ' + opt.text + ' (value=' + opt.value + ')';
+                            }
+                        }
+                    }
+                    return 'not found';
+                })()
+            """)
+            print(f"  Résultat JS: {res}")
+            
+            # Attendre le rechargement AJAX du 2e select
+            page.wait_for_timeout(4000)
+            screenshot(page, "03_apres_type_examen")
 
-            if not type_selectionne:
-                print("  ❌ Type d'examen introuvable !")
-                screenshot(page, "02_erreur_type")
+            # 4. Lister à nouveau les selects pour voir si Examen est chargé
+            print("\n[4] Selects après sélection type...")
+            result2 = page.evaluate("""
+                Array.from(document.querySelectorAll('select')).map((sel, i) => ({
+                    index: i,
+                    name: sel.name,
+                    id: sel.id,
+                    options: Array.from(sel.options).map(o => o.text.trim())
+                }))
+            """)
+            for s in result2:
+                print(f"  Select #{s['index']} id='{s['id']}' name='{s['name']}'")
+                print(f"    Options: {s['options']}")
 
-            # 3. Attendre que le 2e select (Examen) se peuple via AJAX
-            print("\n[3] Attente chargement des examens (AJAX)...")
-            page.wait_for_timeout(3000)
-            screenshot(page, "03_apres_attente")
+            # 5. Sélectionner Scanner Crâne Sans inj
+            print("\n[5] Sélection examen Scanner Crâne...")
+            res2 = page.evaluate("""
+                (function() {
+                    var selects = document.querySelectorAll('select');
+                    for (var sel of selects) {
+                        for (var opt of sel.options) {
+                            if (opt.text.toLowerCase().includes('cr') && 
+                                opt.text.toLowerCase().includes('inj')) {
+                                sel.value = opt.value;
+                                sel.dispatchEvent(new Event('change', {bubbles: true}));
+                                sel.dispatchEvent(new Event('input', {bubbles: true}));
+                                return 'ok: ' + opt.text;
+                            }
+                        }
+                    }
+                    return 'not found';
+                })()
+            """)
+            print(f"  Résultat JS: {res2}")
+            page.wait_for_timeout(2000)
+            screenshot(page, "05_examen_selectionne")
 
-            # Lister les selects après le chargement AJAX
-            selects = page.query_selector_all("select")
-            print(f"  {len(selects)} select(s) après AJAX")
-            for i, sel in enumerate(selects):
-                opts = [o.inner_text().strip() for o in sel.query_selector_all("option")]
-                print(f"  Select #{i+1}: {opts}")
-
-            # 4. Chercher et sélectionner Scanner Crâne
-            print("\n[4] Sélection de l'examen...")
-            examen_selectionne = False
-            for sel in page.query_selector_all("select"):
-                opts = [o.inner_text().strip() for o in sel.query_selector_all("option")]
-                # Chercher une option contenant "cr" (crâne)
-                for opt in opts:
-                    if "cr" in opt.lower() and ("inj" in opt.lower() or "sans" in opt.lower()):
-                        print(f"  → Option trouvée : '{opt}'")
-                        sel.select_option(label=opt)
-                        examen_selectionne = True
-                        page.wait_for_timeout(1500)
-                        break
-                if examen_selectionne:
-                    break
-
-            screenshot(page, "04_examen_selectionne")
-
-            if not examen_selectionne:
-                print("  ❌ Examen introuvable — vérification dropdown custom...")
-                # Peut-être un dropdown custom (select2, vue-select...)
-                # Chercher tous les éléments cliquables avec "Examen"
-                dropdowns = page.query_selector_all("[class*='select'], [class*='dropdown'], [class*='chosen']")
-                print(f"  {len(dropdowns)} dropdown(s) custom trouvé(s)")
-                for d in dropdowns[:5]:
-                    print(f"  Dropdown: class='{d.get_attribute('class')}' text='{d.inner_text()[:50]}'")
-
-            # 5. Cliquer Rechercher
-            print("\n[5] Clic Rechercher...")
+            # 6. Cliquer Rechercher
+            print("\n[6] Clic Rechercher...")
             page.get_by_text("Rechercher un rendez-vous").click(timeout=5000)
             page.wait_for_timeout(5000)
-            screenshot(page, "05_resultats")
-
-            # Texte résultat
+            screenshot(page, "06_resultats")
+            
             texte = page.inner_text("body")
-            print(f"\n📄 Résultat (300 chars): {texte[:300]}")
+            print(f"\n📄 Résultat: {texte[:400]}")
 
         except Exception as e:
             print(f"💥 Erreur: {e}")
             screenshot(page, "erreur")
         finally:
             browser.close()
-            print("\n✅ Diagnostic terminé !")
+            print("\n✅ Terminé !")
 
 if __name__ == "__main__":
-    print(f"🔍 Diagnostic v2 — {datetime.now().strftime('%d/%m/%Y %H:%M UTC')}")
+    print(f"🔍 Diagnostic v3 — {datetime.now().strftime('%d/%m/%Y %H:%M UTC')}")
     diagnostic()
