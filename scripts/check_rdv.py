@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
 Moniteur RDV EasyDoct — Scanner Crâne Sans injection
-Vérifie toutes les 5 min et envoie un email si créneau disponible.
+Logique : cherche D'ABORD les créneaux (boutons verts), 
+puis vérifie le message "complètes" seulement si aucun créneau trouvé.
 """
 
 import os, smtplib, sys, re
@@ -14,7 +15,6 @@ URL        = "https://www.easydoct.com/rdv/imagerie-57-thionville-Terville-Hayan
 EMAIL_DEST = os.environ["EMAIL_DEST"].split(",")
 EMAIL_FROM = os.environ["EMAIL_FROM"]
 EMAIL_PASS = os.environ["EMAIL_PASS"]
-MESSAGE_COMPLET = "toutes nos plages horaires sont actuellement complètes"
 
 def verifier_disponibilite():
     with sync_playwright() as p:
@@ -25,7 +25,7 @@ def verifier_disponibilite():
             page.goto(URL, timeout=30000, wait_until="networkidle")
             page.wait_for_timeout(3000)
 
-            # 1. Sélectionner SCANNER SANS INJECTION via JavaScript
+            # 1. Sélectionner SCANNER SANS INJECTION
             res1 = page.evaluate("""
                 (function() {
                     var selects = document.querySelectorAll('select');
@@ -45,7 +45,7 @@ def verifier_disponibilite():
             print(f"  Type examen: {res1}")
             page.wait_for_timeout(4000)
 
-            # 2. Sélectionner Scanner Crâne Sans inj via JavaScript
+            # 2. Sélectionner Scanner Crâne Sans inj
             res2 = page.evaluate("""
                 (function() {
                     var selects = document.querySelectorAll('select');
@@ -70,24 +70,43 @@ def verifier_disponibilite():
             page.get_by_text("Rechercher un rendez-vous").click(timeout=5000)
             page.wait_for_timeout(5000)
 
-            # 4. Analyser le résultat
-            contenu = page.content().lower()
+            # 4. Chercher les boutons de créneaux VISIBLES (boutons verts avec heures)
+            #    On cherche les éléments visibles contenant des horaires type "10:00"
+            creneaux = page.evaluate("""
+                (function() {
+                    var results = [];
+                    // Chercher tous les éléments avec du texte heure visible
+                    var all = document.querySelectorAll('*');
+                    for (var el of all) {
+                        // Vérifier que l'élément est visible et contient une heure
+                        if (el.children.length === 0) {  // Élément feuille (pas de children)
+                            var text = el.textContent.trim();
+                            if (/^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$/.test(text)) {
+                                var style = window.getComputedStyle(el);
+                                if (style.display !== 'none' && style.visibility !== 'hidden') {
+                                    if (!results.includes(text)) {
+                                        results.push(text);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    return results;
+                })()
+            """)
 
-            if MESSAGE_COMPLET in contenu:
-                print("❌ Plages horaires complètes.")
+            if creneaux:
+                print(f"✅ Créneaux VISIBLES trouvés : {creneaux}")
                 browser.close()
-                return False, []
+                return True, creneaux
 
-            # Chercher des créneaux horaires (ex: 10:00, 12:10)
-            heures = re.findall(r'\b([0-1]?\d|2[0-3]):[0-5]\d\b', page.inner_text("body"))
-            heures_uniques = list(dict.fromkeys(heures))
+            # 5. Seulement si aucun créneau visible → vérifier le message
+            texte_visible = page.inner_text("body").lower()
+            if "toutes nos plages horaires sont actuellement complètes" in texte_visible:
+                print("❌ Message confirmé : plages complètes.")
+            else:
+                print("⏳ Aucun créneau détecté.")
 
-            if heures_uniques:
-                print(f"✅ Créneaux trouvés : {heures_uniques}")
-                browser.close()
-                return True, heures_uniques
-
-            print("⏳ Aucune disponibilité pour le moment.")
             browser.close()
             return False, []
 
