@@ -1,0 +1,30 @@
+name: 🔍 Diagnostic EasyDoct
+
+on:
+  workflow_dispatch:
+
+jobs:
+  diagnostic:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: 📥 Récupérer le code
+        uses: actions/checkout@v4
+      - name: 🐍 Configurer Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: 📦 Installer les dépendances
+        run: |
+          pip install playwright
+          playwright install chromium
+          playwright install-deps chromium
+      - name: 🔍 Lancer le diagnostic
+        run: python scripts/diagnostic.py
+      - name: 📸 Sauvegarder les captures
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: captures-ecran
+          path: /tmp/*.png
+          retention-days: 1
